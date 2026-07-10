@@ -1,6 +1,7 @@
 package goshopify
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -23,13 +24,125 @@ func TestOrderListError(t *testing.T) {
 
 	expectedErrMessage := "Unknown Error"
 
-	orders, err := client.Order.List(nil)
+	orders, err := client.Order.List(context.Background(), nil)
 	if orders != nil {
 		t.Errorf("Order.List returned orders, expected nil: %v", err)
 	}
 
 	if err == nil || err.Error() != expectedErrMessage {
 		t.Errorf("Order.List err returned %+v, expected %+v", err, expectedErrMessage)
+	}
+}
+
+func TestOrderListAll(t *testing.T) {
+	setup()
+	defer teardown()
+
+	listURL := fmt.Sprintf("https://fooshop.myshopify.com/%s/orders.json", client.pathPrefix)
+
+	cases := []struct {
+		name                string
+		expectedOrders      []Order
+		expectedRequestURLs []string
+		expectedLinkHeaders []string
+		expectedBodies      []string
+		expectedErr         error
+	}{
+		{
+			name: "Pulls the next page",
+			expectedRequestURLs: []string{
+				listURL,
+				fmt.Sprintf("%s?page_info=pg2", listURL),
+			},
+			expectedLinkHeaders: []string{
+				`<http://valid.url?page_info=pg2>; rel="next"`,
+				`<http://valid.url?page_info=pg1>; rel="previous"`,
+			},
+			expectedBodies: []string{
+				`{"orders": [{"id":1},{"id":2}]}`,
+				`{"orders": [{"id":3},{"id":4}]}`,
+			},
+			expectedOrders: []Order{{Id: 1}, {Id: 2}, {Id: 3}, {Id: 4}},
+			expectedErr:    nil,
+		},
+		{
+			name: "Stops when there is not a next page",
+			expectedRequestURLs: []string{
+				listURL,
+			},
+			expectedLinkHeaders: []string{
+				`<http://valid.url?page_info=pg2>; rel="previous"`,
+			},
+			expectedBodies: []string{
+				`{"orders": [{"id":1}]}`,
+			},
+			expectedOrders: []Order{{Id: 1}},
+			expectedErr:    nil,
+		},
+		{
+			name: "Returns errors when required",
+			expectedRequestURLs: []string{
+				listURL,
+			},
+			expectedLinkHeaders: []string{
+				`<http://valid.url?paage_info=pg2>; rel="previous"`,
+			},
+			expectedBodies: []string{
+				`{"orders": []}`,
+			},
+			expectedOrders: []Order{},
+			expectedErr:    errors.New("page_info is missing"),
+		},
+	}
+
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if len(c.expectedRequestURLs) != len(c.expectedLinkHeaders) {
+				t.Errorf(
+					"test case must have the same number of expected request urls (%d) as expected link headers (%d)",
+					len(c.expectedRequestURLs),
+					len(c.expectedLinkHeaders),
+				)
+
+				return
+			}
+
+			if len(c.expectedRequestURLs) != len(c.expectedBodies) {
+				t.Errorf(
+					"test case must have the same number of expected request urls (%d) as expected bodies (%d)",
+					len(c.expectedRequestURLs),
+					len(c.expectedBodies),
+				)
+
+				return
+			}
+
+			for i := range c.expectedRequestURLs {
+				response := &http.Response{
+					StatusCode: 200,
+					Body:       httpmock.NewRespBodyFromString(c.expectedBodies[i]),
+					Header: http.Header{
+						"Link": {c.expectedLinkHeaders[i]},
+					},
+				}
+
+				httpmock.RegisterResponder("GET", c.expectedRequestURLs[i], httpmock.ResponderFromResponse(response))
+			}
+
+			orders, err := client.Order.ListAll(context.Background(), nil)
+			if !reflect.DeepEqual(orders, c.expectedOrders) {
+				t.Errorf("test %d Order.ListAll orders returned %+v, expected %+v", i, orders, c.expectedOrders)
+			}
+
+			if (c.expectedErr != nil || err != nil) && err.Error() != c.expectedErr.Error() {
+				t.Errorf(
+					"test %d Order.ListAll err returned %+v, expected %+v",
+					i,
+					err,
+					c.expectedErr,
+				)
+			}
+		})
 	}
 }
 
@@ -56,7 +169,7 @@ func TestOrderListWithPagination(t *testing.T) {
 		{
 			`{"orders": [{"id":1},{"id":2}]}`,
 			"",
-			[]Order{{ID: 1}, {ID: 2}},
+			[]Order{{Id: 1}, {Id: 2}},
 			new(Pagination),
 			nil,
 		},
@@ -100,7 +213,7 @@ func TestOrderListWithPagination(t *testing.T) {
 		{
 			`{"orders": [{"id":1}]}`,
 			`<http://valid.url?page_info=foo&limit=2>; rel="next"`,
-			[]Order{{ID: 1}},
+			[]Order{{Id: 1}},
 			&Pagination{
 				NextPageOptions: &ListOptions{PageInfo: "foo", Limit: 2},
 			},
@@ -109,7 +222,7 @@ func TestOrderListWithPagination(t *testing.T) {
 		{
 			`{"orders": [{"id":2}]}`,
 			`<http://valid.url?page_info=foo>; rel="next", <http://valid.url?page_info=bar>; rel="previous"`,
-			[]Order{{ID: 2}},
+			[]Order{{Id: 2}},
 			&Pagination{
 				NextPageOptions:     &ListOptions{PageInfo: "foo"},
 				PreviousPageOptions: &ListOptions{PageInfo: "bar"},
@@ -128,7 +241,7 @@ func TestOrderListWithPagination(t *testing.T) {
 
 		httpmock.RegisterResponder("GET", listURL, httpmock.ResponderFromResponse(response))
 
-		orders, pagination, err := client.Order.ListWithPagination(nil)
+		orders, pagination, err := client.Order.ListWithPagination(context.Background(), nil)
 		if !reflect.DeepEqual(orders, c.expectedOrders) {
 			t.Errorf("test %d Order.ListWithPagination orders returned %+v, expected %+v", i, orders, c.expectedOrders)
 		}
@@ -171,6 +284,11 @@ func orderTests(t *testing.T, order Order) {
 		t.Errorf("Order.TotalPrice returned %+v, expected %+v", order.TotalPrice, p)
 	}
 
+	ctp := decimal.NewFromFloat(9.5)
+	if !ctp.Equals(*order.CurrentTotalPrice) {
+		t.Errorf("Order.CurrentTotalPrice returned %+v, expected %+v", order.CurrentTotalPrice, ctp)
+	}
+
 	// Check null prices, notice that prices are usually not empty.
 	if order.TotalTax != nil {
 		t.Errorf("Order.TotalTax returned %+v, expected %+v", order.TotalTax, nil)
@@ -199,8 +317,8 @@ func transactionTest(t *testing.T, transaction Transaction) {
 	}
 
 	// Check null value
-	if transaction.LocationID != nil {
-		t.Error("Expected Transaction.LocationID to be nil")
+	if transaction.LocationId != nil {
+		t.Error("Expected Transaction.LocationId to be nil")
 	}
 
 	if transaction.PaymentDetails == nil {
@@ -215,7 +333,7 @@ func TestOrderList(t *testing.T) {
 	httpmock.RegisterResponder("GET", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders.json", client.pathPrefix),
 		httpmock.NewBytesResponder(200, loadFixture("orders.json")))
 
-	orders, err := client.Order.List(nil)
+	orders, err := client.Order.List(context.Background(), nil)
 	if err != nil {
 		t.Errorf("Order.List returned error: %v", err)
 	}
@@ -251,10 +369,10 @@ func TestOrderListOptions(t *testing.T) {
 			Fields: "id,name",
 		},
 
-		Status: "any",
+		Status: OrderStatusAny,
 	}
 
-	orders, err := client.Order.List(options)
+	orders, err := client.Order.List(context.Background(), options)
 	if err != nil {
 		t.Errorf("Order.List returned error: %v", err)
 	}
@@ -275,7 +393,7 @@ func TestOrderGet(t *testing.T) {
 	httpmock.RegisterResponder("GET", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders/123456.json", client.pathPrefix),
 		httpmock.NewBytesResponder(200, loadFixture("order.json")))
 
-	order, err := client.Order.Get(123456, nil)
+	order, err := client.Order.Get(context.Background(), 123456, nil)
 	if err != nil {
 		t.Errorf("Order.List returned error: %v", err)
 	}
@@ -302,7 +420,7 @@ func TestOrderGetWithTransactions(t *testing.T) {
 		ApiFeatures string `url:"_apiFeatures"`
 	}{"include-transactions"}
 
-	order, err := client.Order.Get(123456, options)
+	order, err := client.Order.Get(context.Background(), 123456, options)
 	if err != nil {
 		t.Errorf("Order.List returned error: %v", err)
 	}
@@ -334,7 +452,7 @@ func TestOrderCount(t *testing.T) {
 		params,
 		httpmock.NewStringResponder(200, `{"count": 2}`))
 
-	cnt, err := client.Order.Count(nil)
+	cnt, err := client.Order.Count(context.Background(), nil)
 	if err != nil {
 		t.Errorf("Order.Count returned error: %v", err)
 	}
@@ -345,7 +463,7 @@ func TestOrderCount(t *testing.T) {
 	}
 
 	date := time.Date(2016, time.January, 1, 0, 0, 0, 0, time.UTC)
-	cnt, err = client.Order.Count(OrderCountOptions{CreatedAtMin: date})
+	cnt, err = client.Order.Count(context.Background(), OrderCountOptions{CreatedAtMin: date})
 	if err != nil {
 		t.Errorf("Order.Count returned error: %v", err)
 	}
@@ -365,21 +483,21 @@ func TestOrderCreate(t *testing.T) {
 
 	order := Order{
 		LineItems: []LineItem{
-			LineItem{
-				VariantID: 1,
+			{
+				VariantId: 1,
 				Quantity:  1,
 			},
 		},
 	}
 
-	o, err := client.Order.Create(order)
+	o, err := client.Order.Create(context.Background(), order)
 	if err != nil {
 		t.Errorf("Order.Create returned error: %v", err)
 	}
 
-	expected := Order{ID: 1}
-	if o.ID != expected.ID {
-		t.Errorf("Order.Create returned id %d, expected %d", o.ID, expected.ID)
+	expected := Order{Id: 1}
+	if o.Id != expected.Id {
+		t.Errorf("Order.Create returned id %d, expected %d", o.Id, expected.Id)
 	}
 }
 
@@ -391,19 +509,19 @@ func TestOrderUpdate(t *testing.T) {
 		httpmock.NewStringResponder(201, `{"order":{"id": 1}}`))
 
 	order := Order{
-		ID:                1,
-		FinancialStatus:   "paid",
-		FulfillmentStatus: "fulfilled",
+		Id:                1,
+		FinancialStatus:   OrderFinancialStatusPaid,
+		FulfillmentStatus: OrderFulfillmentStatusFulfilled,
 	}
 
-	o, err := client.Order.Update(order)
+	o, err := client.Order.Update(context.Background(), order)
 	if err != nil {
 		t.Errorf("Order.Update returned error: %v", err)
 	}
 
-	expected := Order{ID: 1}
-	if o.ID != expected.ID {
-		t.Errorf("Order.Update returned id %d, expected %d", o.ID, expected.ID)
+	expected := Order{Id: 1}
+	if o.Id != expected.Id {
+		t.Errorf("Order.Update returned id %d, expected %d", o.Id, expected.Id)
 	}
 }
 
@@ -414,7 +532,7 @@ func TestOrderCancel(t *testing.T) {
 	httpmock.RegisterResponder("POST", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders/123456/cancel.json", client.pathPrefix),
 		httpmock.NewBytesResponder(200, loadFixture("order_with_transaction.json")))
 
-	order, err := client.Order.Cancel(123456, nil)
+	order, err := client.Order.Cancel(context.Background(), 123456, nil)
 	if err != nil {
 		t.Errorf("Order.Update returned error: %v", err)
 	}
@@ -436,7 +554,7 @@ func TestOrderClose(t *testing.T) {
 	httpmock.RegisterResponder("POST", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders/123456/close.json", client.pathPrefix),
 		httpmock.NewStringResponder(200, `{"order":{"closed_at":"2016-05-17T04:14:36-04:00"}}`))
 
-	order, err := client.Order.Close(123456)
+	order, err := client.Order.Close(context.Background(), 123456)
 	if err != nil {
 		t.Errorf("Order.Update returned error: %v", err)
 	}
@@ -456,7 +574,7 @@ func TestOrderOpen(t *testing.T) {
 	httpmock.RegisterResponder("POST", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders/123456/open.json", client.pathPrefix),
 		httpmock.NewStringResponder(200, `{"order":{"closed_at":null}}`))
 
-	order, err := client.Order.Open(123456)
+	order, err := client.Order.Open(context.Background(), 123456)
 	if err != nil {
 		t.Errorf("Order.Update returned error: %v", err)
 	}
@@ -473,12 +591,12 @@ func TestOrderListMetafields(t *testing.T) {
 	httpmock.RegisterResponder("GET", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders/1/metafields.json", client.pathPrefix),
 		httpmock.NewStringResponder(200, `{"metafields": [{"id":1},{"id":2}]}`))
 
-	metafields, err := client.Order.ListMetafields(1, nil)
+	metafields, err := client.Order.ListMetafields(context.Background(), 1, nil)
 	if err != nil {
 		t.Errorf("Order.ListMetafields() returned error: %v", err)
 	}
 
-	expected := []Metafield{{ID: 1}, {ID: 2}}
+	expected := []Metafield{{Id: 1}, {Id: 2}}
 	if !reflect.DeepEqual(metafields, expected) {
 		t.Errorf("Order.ListMetafields() returned %+v, expected %+v", metafields, expected)
 	}
@@ -498,7 +616,7 @@ func TestOrderCountMetafields(t *testing.T) {
 		params,
 		httpmock.NewStringResponder(200, `{"count": 2}`))
 
-	cnt, err := client.Order.CountMetafields(1, nil)
+	cnt, err := client.Order.CountMetafields(context.Background(), 1, nil)
 	if err != nil {
 		t.Errorf("Order.CountMetafields() returned error: %v", err)
 	}
@@ -509,7 +627,7 @@ func TestOrderCountMetafields(t *testing.T) {
 	}
 
 	date := time.Date(2016, time.January, 1, 0, 0, 0, 0, time.UTC)
-	cnt, err = client.Order.CountMetafields(1, CountOptions{CreatedAtMin: date})
+	cnt, err = client.Order.CountMetafields(context.Background(), 1, CountOptions{CreatedAtMin: date})
 	if err != nil {
 		t.Errorf("Order.CountMetafields() returned error: %v", err)
 	}
@@ -527,12 +645,12 @@ func TestOrderGetMetafield(t *testing.T) {
 	httpmock.RegisterResponder("GET", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders/1/metafields/2.json", client.pathPrefix),
 		httpmock.NewStringResponder(200, `{"metafield": {"id":2}}`))
 
-	metafield, err := client.Order.GetMetafield(1, 2, nil)
+	metafield, err := client.Order.GetMetafield(context.Background(), 1, 2, nil)
 	if err != nil {
 		t.Errorf("Order.GetMetafield() returned error: %v", err)
 	}
 
-	expected := &Metafield{ID: 2}
+	expected := &Metafield{Id: 2}
 	if !reflect.DeepEqual(metafield, expected) {
 		t.Errorf("Order.GetMetafield() returned %+v, expected %+v", metafield, expected)
 	}
@@ -548,12 +666,11 @@ func TestOrderCreateMetafield(t *testing.T) {
 	metafield := Metafield{
 		Key:       "app_key",
 		Value:     "app_value",
-		ValueType: "string",
-		Type:      "single_line_text_field",
+		Type:      MetafieldTypeSingleLineTextField,
 		Namespace: "affiliates",
 	}
 
-	returnedMetafield, err := client.Order.CreateMetafield(1, metafield)
+	returnedMetafield, err := client.Order.CreateMetafield(context.Background(), 1, metafield)
 	if err != nil {
 		t.Errorf("Order.CreateMetafield() returned error: %v", err)
 	}
@@ -569,15 +686,14 @@ func TestOrderUpdateMetafield(t *testing.T) {
 		httpmock.NewBytesResponder(200, loadFixture("metafield.json")))
 
 	metafield := Metafield{
-		ID:        2,
+		Id:        2,
 		Key:       "app_key",
 		Value:     "app_value",
-		ValueType: "string",
-		Type:      "single_line_text_field",
+		Type:      MetafieldTypeSingleLineTextField,
 		Namespace: "affiliates",
 	}
 
-	returnedMetafield, err := client.Order.UpdateMetafield(1, metafield)
+	returnedMetafield, err := client.Order.UpdateMetafield(context.Background(), 1, metafield)
 	if err != nil {
 		t.Errorf("Order.UpdateMetafield() returned error: %v", err)
 	}
@@ -592,7 +708,7 @@ func TestOrderDeleteMetafield(t *testing.T) {
 	httpmock.RegisterResponder("DELETE", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders/1/metafields/2.json", client.pathPrefix),
 		httpmock.NewStringResponder(200, "{}"))
 
-	err := client.Order.DeleteMetafield(1, 2)
+	err := client.Order.DeleteMetafield(context.Background(), 1, 2)
 	if err != nil {
 		t.Errorf("Order.DeleteMetafield() returned error: %v", err)
 	}
@@ -605,12 +721,12 @@ func TestOrderListFulfillments(t *testing.T) {
 	httpmock.RegisterResponder("GET", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders/1/fulfillments.json", client.pathPrefix),
 		httpmock.NewStringResponder(200, `{"fulfillments": [{"id":1},{"id":2}]}`))
 
-	fulfillments, err := client.Order.ListFulfillments(1, nil)
+	fulfillments, err := client.Order.ListFulfillments(context.Background(), 1, nil)
 	if err != nil {
 		t.Errorf("Order.ListFulfillments() returned error: %v", err)
 	}
 
-	expected := []Fulfillment{{ID: 1}, {ID: 2}}
+	expected := []Fulfillment{{Id: 1}, {Id: 2}}
 	if !reflect.DeepEqual(fulfillments, expected) {
 		t.Errorf("Order.ListFulfillments() returned %+v, expected %+v", fulfillments, expected)
 	}
@@ -630,7 +746,7 @@ func TestOrderCountFulfillments(t *testing.T) {
 		params,
 		httpmock.NewStringResponder(200, `{"count": 2}`))
 
-	cnt, err := client.Order.CountFulfillments(1, nil)
+	cnt, err := client.Order.CountFulfillments(context.Background(), 1, nil)
 	if err != nil {
 		t.Errorf("Order.CountFulfillments() returned error: %v", err)
 	}
@@ -641,7 +757,7 @@ func TestOrderCountFulfillments(t *testing.T) {
 	}
 
 	date := time.Date(2016, time.January, 1, 0, 0, 0, 0, time.UTC)
-	cnt, err = client.Order.CountFulfillments(1, CountOptions{CreatedAtMin: date})
+	cnt, err = client.Order.CountFulfillments(context.Background(), 1, CountOptions{CreatedAtMin: date})
 	if err != nil {
 		t.Errorf("Order.CountFulfillments() returned error: %v", err)
 	}
@@ -659,12 +775,12 @@ func TestOrderGetFulfillment(t *testing.T) {
 	httpmock.RegisterResponder("GET", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders/1/fulfillments/2.json", client.pathPrefix),
 		httpmock.NewStringResponder(200, `{"fulfillment": {"id":2}}`))
 
-	fulfillment, err := client.Order.GetFulfillment(1, 2, nil)
+	fulfillment, err := client.Order.GetFulfillment(context.Background(), 1, 2, nil)
 	if err != nil {
 		t.Errorf("Order.GetFulfillment() returned error: %v", err)
 	}
 
-	expected := &Fulfillment{ID: 2}
+	expected := &Fulfillment{Id: 2}
 	if !reflect.DeepEqual(fulfillment, expected) {
 		t.Errorf("Order.GetFulfillment() returned %+v, expected %+v", fulfillment, expected)
 	}
@@ -678,7 +794,7 @@ func TestOrderCreateFulfillment(t *testing.T) {
 		httpmock.NewBytesResponder(200, loadFixture("fulfillment.json")))
 
 	fulfillment := Fulfillment{
-		LocationID:     905684977,
+		LocationId:     905684977,
 		TrackingNumber: "123456789",
 		TrackingUrls: []string{
 			"https://shipping.xyz/track.php?num=123456789",
@@ -687,7 +803,7 @@ func TestOrderCreateFulfillment(t *testing.T) {
 		NotifyCustomer: true,
 	}
 
-	returnedFulfillment, err := client.Order.CreateFulfillment(1, fulfillment)
+	returnedFulfillment, err := client.Order.CreateFulfillment(context.Background(), 1, fulfillment)
 	if err != nil {
 		t.Errorf("Order.CreateFulfillment() returned error: %v", err)
 	}
@@ -703,10 +819,10 @@ func TestOrderUpdateFulfillment(t *testing.T) {
 		httpmock.NewBytesResponder(200, loadFixture("fulfillment.json")))
 
 	fulfillment := Fulfillment{
-		ID:             1022782888,
+		Id:             1022782888,
 		TrackingNumber: "987654321",
 	}
-	returnedFulfillment, err := client.Order.UpdateFulfillment(1, fulfillment)
+	returnedFulfillment, err := client.Order.UpdateFulfillment(context.Background(), 1, fulfillment)
 	if err != nil {
 		t.Errorf("Order.UpdateFulfillment() returned error: %v", err)
 	}
@@ -721,7 +837,7 @@ func TestOrderCompleteFulfillment(t *testing.T) {
 	httpmock.RegisterResponder("POST", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders/1/fulfillments/2/complete.json", client.pathPrefix),
 		httpmock.NewBytesResponder(200, loadFixture("fulfillment.json")))
 
-	returnedFulfillment, err := client.Order.CompleteFulfillment(1, 2)
+	returnedFulfillment, err := client.Order.CompleteFulfillment(context.Background(), 1, 2)
 	if err != nil {
 		t.Errorf("Order.CompleteFulfillment() returned error: %v", err)
 	}
@@ -736,7 +852,7 @@ func TestOrderTransitionFulfillment(t *testing.T) {
 	httpmock.RegisterResponder("POST", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders/1/fulfillments/2/open.json", client.pathPrefix),
 		httpmock.NewBytesResponder(200, loadFixture("fulfillment.json")))
 
-	returnedFulfillment, err := client.Order.TransitionFulfillment(1, 2)
+	returnedFulfillment, err := client.Order.TransitionFulfillment(context.Background(), 1, 2)
 	if err != nil {
 		t.Errorf("Order.TransitionFulfillment() returned error: %v", err)
 	}
@@ -751,12 +867,25 @@ func TestOrderCancelFulfillment(t *testing.T) {
 	httpmock.RegisterResponder("POST", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders/1/fulfillments/2/cancel.json", client.pathPrefix),
 		httpmock.NewBytesResponder(200, loadFixture("fulfillment.json")))
 
-	returnedFulfillment, err := client.Order.CancelFulfillment(1, 2)
+	returnedFulfillment, err := client.Order.CancelFulfillment(context.Background(), 1, 2)
 	if err != nil {
 		t.Errorf("Order.CancelFulfillment() returned error: %v", err)
 	}
 
 	FulfillmentTests(t, *returnedFulfillment)
+}
+
+func TestOrderDelete(t *testing.T) {
+	setup()
+	defer teardown()
+
+	httpmock.RegisterResponder("DELETE", fmt.Sprintf("https://fooshop.myshopify.com/%s/orders/1.json", client.pathPrefix),
+		httpmock.NewStringResponder(200, "{}"))
+
+	err := client.Order.Delete(context.Background(), 1)
+	if err != nil {
+		t.Errorf("Order.Delete returned error: %v", err)
+	}
 }
 
 // TestLineItemUnmarshalJSON tests unmarsalling a LineItem from json
@@ -868,7 +997,7 @@ func TestLineItemUnmarshalJSONPropertiesObject(t *testing.T) {
 	testLineItem(t, expected, actual)
 }
 
-// TestShippingLines tests unmarshalling ShippingLines.RequestFulfillmentServiceID from a JSON string
+// TestShippingLines tests unmarshalling ShippingLines.RequestFulfillmentServiceId from a JSON string
 func TestShippingLines_UnmarshallJSON(t *testing.T) {
 	setup()
 	defer teardown()
@@ -885,8 +1014,8 @@ func TestShippingLines_UnmarshallJSON(t *testing.T) {
 	testShippingLines(t, expected, actual)
 }
 
-// TestShippingLines tests unmarshalling ShippingLines.RequestFulfillmentServiceID from a JSON Number
-func TestShippingLines_UnmarshallJSON_RequestFulfillmentServiceIDNumber(t *testing.T) {
+// TestShippingLines tests unmarshalling ShippingLines.RequestFulfillmentServiceId from a JSON Number
+func TestShippingLines_UnmarshallJSON_RequestFulfillmentServiceIdNumber(t *testing.T) {
 	setup()
 	defer teardown()
 
@@ -898,13 +1027,13 @@ func TestShippingLines_UnmarshallJSON_RequestFulfillmentServiceIDNumber(t *testi
 	}
 
 	expected := validShippingLines()
-	expected.RequestedFulfillmentServiceID = "123456"
+	expected.RequestedFulfillmentServiceId = "123456"
 
 	testShippingLines(t, expected, actual)
 }
 
-// TestShippingLines tests unmarshalling ShippingLines.RequestFulfillmentServiceID from a JSON null
-func TestShippingLines_UnmarshallJSON_RequestFulfillmentServiceIDNull(t *testing.T) {
+// TestShippingLines tests unmarshalling ShippingLines.RequestFulfillmentServiceId from a JSON null
+func TestShippingLines_UnmarshallJSON_RequestFulfillmentServiceIdNull(t *testing.T) {
 	setup()
 	defer teardown()
 
@@ -916,13 +1045,13 @@ func TestShippingLines_UnmarshallJSON_RequestFulfillmentServiceIDNull(t *testing
 	}
 
 	expected := validShippingLines()
-	expected.RequestedFulfillmentServiceID = ""
+	expected.RequestedFulfillmentServiceId = ""
 
 	testShippingLines(t, expected, actual)
 }
 
-// TestShippingLines tests unmarshalling ShippingLines.RequestFulfillmentServiceID from a malformed JSON
-func TestShippingLines_UnmarshallJSON_RequestFulfillmentServiceIDInvalid(t *testing.T) {
+// TestShippingLines tests unmarshalling ShippingLines.RequestFulfillmentServiceId from a malformed JSON
+func TestShippingLines_UnmarshallJSON_RequestFulfillmentServiceIdInvalid(t *testing.T) {
 	setup()
 	defer teardown()
 
@@ -935,16 +1064,16 @@ func TestShippingLines_UnmarshallJSON_RequestFulfillmentServiceIDInvalid(t *test
 }
 
 func testLineItem(t *testing.T, expected, actual LineItem) {
-	if actual.ID != expected.ID {
-		t.Errorf("LineItem.ID should be (%v), was (%v)", expected.ID, actual.ID)
+	if actual.Id != expected.Id {
+		t.Errorf("LineItem.Id should be (%v), was (%v)", expected.Id, actual.Id)
 	}
 
-	if actual.ProductID != expected.ProductID {
-		t.Errorf("LineItem.ProductID should be (%v), was (%v)", expected.ProductID, actual.ProductID)
+	if actual.ProductId != expected.ProductId {
+		t.Errorf("LineItem.ProductId should be (%v), was (%v)", expected.ProductId, actual.ProductId)
 	}
 
-	if actual.VariantID != expected.VariantID {
-		t.Errorf("LineItem.VariantID should be (%v), was (%v)", expected.VariantID, actual.VariantID)
+	if actual.VariantId != expected.VariantId {
+		t.Errorf("LineItem.VariantId should be (%v), was (%v)", expected.VariantId, actual.VariantId)
 	}
 
 	if actual.Quantity != expected.Quantity {
@@ -1109,8 +1238,8 @@ func testTaxLines(t *testing.T, expected, actual []TaxLine) {
 }
 
 func testShippingLines(t *testing.T, expected, actual ShippingLines) {
-	if actual.ID != expected.ID {
-		t.Errorf("ShippingLines.ID should be (%v), was (%v)", expected.ID, actual.ID)
+	if actual.Id != expected.Id {
+		t.Errorf("ShippingLines.Id should be (%v), was (%v)", expected.Id, actual.Id)
 	}
 
 	if actual.Title != expected.Title {
@@ -1133,16 +1262,16 @@ func testShippingLines(t *testing.T, expected, actual ShippingLines) {
 		t.Errorf("ShippingLines.Phone should be (%v), was (%v)", expected.Phone, actual.Phone)
 	}
 
-	if actual.RequestedFulfillmentServiceID != expected.RequestedFulfillmentServiceID {
-		t.Errorf("ShippingLines.RequestedFulfillmentServiceID should be (%v), was (%v)", expected.RequestedFulfillmentServiceID, actual.RequestedFulfillmentServiceID)
-	}
-
-	if actual.DeliveryCategory != expected.DeliveryCategory {
-		t.Errorf("ShippingLines.DeliveryCategory should be (%v), was (%v)", expected.DeliveryCategory, actual.DeliveryCategory)
+	if actual.RequestedFulfillmentServiceId != expected.RequestedFulfillmentServiceId {
+		t.Errorf("ShippingLines.RequestedFulfillmentServiceId should be (%v), was (%v)", expected.RequestedFulfillmentServiceId, actual.RequestedFulfillmentServiceId)
 	}
 
 	if actual.CarrierIdentifier != expected.CarrierIdentifier {
 		t.Errorf("ShippingLines.CarrierIdentifier should be (%v), was (%v)", expected.CarrierIdentifier, actual.CarrierIdentifier)
+	}
+
+	if actual.Handle != expected.Handle {
+		t.Errorf("ShippingLines.Handle should be (%v), was (%v)", expected.Handle, actual.Handle)
 	}
 
 	testTaxLines(t, expected.TaxLines, actual.TaxLines)
@@ -1157,7 +1286,7 @@ func propertiesEmptyStructLientItem() LineItem {
 func propertiesStructLientItem() LineItem {
 	return LineItem{
 		Properties: []NoteAttribute{
-			NoteAttribute{
+			{
 				Name:  "property 1",
 				Value: float64(3),
 			},
@@ -1175,9 +1304,9 @@ func validLineItem() LineItem {
 	tl2Rate := decimal.New(5, -2)
 	discountAllocationAmount := decimal.New(55, -1)
 	return LineItem{
-		ID:                         int64(254721536),
-		ProductID:                  int64(111475476),
-		VariantID:                  int64(1234),
+		Id:                         uint64(254721536),
+		ProductId:                  uint64(111475476),
+		VariantId:                  uint64(1234),
 		Quantity:                   1,
 		Price:                      &price,
 		TotalDiscount:              &totalDiscount,
@@ -1193,11 +1322,11 @@ func validLineItem() LineItem {
 		VariantInventoryManagement: "shopify",
 		PreTaxPrice:                &preTaxPrice,
 		Properties: []NoteAttribute{
-			NoteAttribute{
+			{
 				Name:  "note 1",
 				Value: "one",
 			},
-			NoteAttribute{
+			{
 				Name:  "note 2",
 				Value: float64(2),
 			},
@@ -1205,21 +1334,21 @@ func validLineItem() LineItem {
 		ProductExists:       true,
 		FulfillableQuantity: 1,
 		Grams:               100,
-		FulfillmentStatus:   "partial",
+		FulfillmentStatus:   OrderFulfillmentStatusPartial,
 		TaxLines: []TaxLine{
-			TaxLine{
+			{
 				Title: "State tax",
 				Price: &tl1Price,
 				Rate:  &tl1Rate,
 			},
-			TaxLine{
+			{
 				Title: "Federal tax",
 				Price: &tl2Price,
 				Rate:  &tl2Rate,
 			},
 		},
 		OriginLocation: &Address{
-			ID:           123,
+			Id:           123,
 			Address1:     "100 some street",
 			Address2:     "",
 			City:         "Winnipeg",
@@ -1237,7 +1366,7 @@ func validLineItem() LineItem {
 			Zip:          "R3Y 0L6",
 		},
 		DestinationLocation: &Address{
-			ID:           124,
+			Id:           124,
 			Address1:     "200 some street",
 			Address2:     "",
 			City:         "Winnipeg",
@@ -1264,7 +1393,7 @@ func validLineItem() LineItem {
 		DiscountAllocations: []DiscountAllocations{
 			{
 				Amount: &discountAllocationAmount,
-				AmountSet: AmountSet{
+				AmountSet: &AmountSet{
 					ShopMoney: AmountSetEntry{
 						Amount:       &discountAllocationAmount,
 						CurrencyCode: "EUR",
@@ -1281,20 +1410,41 @@ func validLineItem() LineItem {
 
 func validShippingLines() ShippingLines {
 	price := decimal.New(400, -2)
+	eurPrice := decimal.New(317, -2)
 	tl1Price := decimal.New(1350, -2)
 	tl1Rate := decimal.New(6, -2)
 	tl2Price := decimal.New(1250, -2)
 	tl2Rate := decimal.New(5, -2)
 
 	return ShippingLines{
-		ID:                            int64(254721542),
-		Title:                         "Small Packet International Air",
-		Price:                         &price,
+		Id:    123456789,
+		Title: "Small Packet International Air",
+		Price: &price,
+		PriceSet: &AmountSet{
+			ShopMoney: AmountSetEntry{
+				Amount:       &price,
+				CurrencyCode: "USD",
+			},
+			PresentmentMoney: AmountSetEntry{
+				Amount:       &eurPrice,
+				CurrencyCode: "EUR",
+			},
+		},
+		DiscountedPrice: &price,
+		DiscountedPriceSet: &AmountSet{
+			ShopMoney: AmountSetEntry{
+				Amount:       &price,
+				CurrencyCode: "USD",
+			},
+			PresentmentMoney: AmountSetEntry{
+				Amount:       &eurPrice,
+				CurrencyCode: "EUR",
+			},
+		},
 		Code:                          "INT.TP",
 		Source:                        "canada_post",
 		Phone:                         "",
-		RequestedFulfillmentServiceID: "third_party_fulfillment_service_id",
-		DeliveryCategory:              "",
+		RequestedFulfillmentServiceId: "third_party_fulfillment_service_id",
 		CarrierIdentifier:             "third_party_carrier_identifier",
 		TaxLines: []TaxLine{
 			{
@@ -1308,5 +1458,6 @@ func validShippingLines() ShippingLines {
 				Rate:  &tl2Rate,
 			},
 		},
+		Handle: "test",
 	}
 }

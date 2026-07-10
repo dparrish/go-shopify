@@ -1,6 +1,7 @@
 package goshopify
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -13,9 +14,9 @@ func inventoryItemTests(t *testing.T, item *InventoryItem) {
 		return
 	}
 
-	expectedInt := int64(808950810)
-	if item.ID != expectedInt {
-		t.Errorf("InventoryItem.ID returned %+v, expected %+v", item.ID, expectedInt)
+	expectedInt := uint64(808950810)
+	if item.Id != expectedInt {
+		t.Errorf("InventoryItem.Id returned %+v, expected %+v", item.Id, expectedInt)
 	}
 
 	expectedSKU := "new sku"
@@ -33,6 +34,42 @@ func inventoryItemTests(t *testing.T, item *InventoryItem) {
 	if costFloat != expectedCost {
 		t.Errorf("InventoryItem.Cost (float) is %+v, expected %+v", costFloat, expectedCost)
 	}
+
+	expectedOrigin := "US"
+	if *item.CountryCodeOfOrigin != expectedOrigin {
+		t.Errorf("InventoryItem.CountryCodeOfOrigin returned %+v, expected %+v", item.CountryCodeOfOrigin, expectedOrigin)
+	}
+
+	expectedCodes := []CountryHarmonizedSystemCode{
+		{HarmonizedSystemCode: "8471.70.40.35", CountryCode: "US"},
+		{HarmonizedSystemCode: "8471.70.50.35", CountryCode: "CA"},
+	}
+
+	if len(item.CountryHarmonizedSystemCodes) != len(expectedCodes) {
+		t.Errorf("InventoryItem.CountryHarmonizedSystemCodes length is %d, expected %d",
+			len(item.CountryHarmonizedSystemCodes), len(expectedCodes))
+	}
+
+	for i, code := range item.CountryHarmonizedSystemCodes {
+		if code.HarmonizedSystemCode != expectedCodes[i].HarmonizedSystemCode {
+			t.Errorf("InventoryItem.CountryHarmonizedSystemCodes[%d].HarmonizedSystemCode is %s, expected %s",
+				i, code.HarmonizedSystemCode, expectedCodes[i].HarmonizedSystemCode)
+		}
+		if code.CountryCode != expectedCodes[i].CountryCode {
+			t.Errorf("InventoryItem.CountryHarmonizedSystemCodes[%d].CountryCode is %s, expected %s",
+				i, code.CountryCode, expectedCodes[i].CountryCode)
+		}
+	}
+
+	expectedHSCode := "8471.70.40.35"
+	if *item.HarmonizedSystemCode != expectedHSCode {
+		t.Errorf("InventoryItem.HarmonizedSystemCode returned %+v, expected %+v", item.CountryHarmonizedSystemCodes, expectedHSCode)
+	}
+
+	expectedProvince := "ON"
+	if *item.ProvinceCodeOfOrigin != expectedProvince {
+		t.Errorf("InventoryItem.ProvinceCodeOfOrigin returned %+v, expected %+v", item.ProvinceCodeOfOrigin, expectedHSCode)
+	}
 }
 
 func inventoryItemsTests(t *testing.T, items []InventoryItem) {
@@ -49,7 +86,7 @@ func TestInventoryItemsList(t *testing.T) {
 	httpmock.RegisterResponder("GET", fmt.Sprintf("https://fooshop.myshopify.com/%s/inventory_items.json", client.pathPrefix),
 		httpmock.NewBytesResponder(200, loadFixture("inventory_items.json")))
 
-	items, err := client.InventoryItem.List(nil)
+	items, err := client.InventoryItem.List(context.Background(), nil)
 	if err != nil {
 		t.Errorf("InventoryItems.List returned error: %v", err)
 	}
@@ -57,7 +94,7 @@ func TestInventoryItemsList(t *testing.T) {
 	inventoryItemsTests(t, items)
 }
 
-func TestInventoryItemsListWithIDs(t *testing.T) {
+func TestInventoryItemsListWithIds(t *testing.T) {
 	setup()
 	defer teardown()
 
@@ -72,10 +109,10 @@ func TestInventoryItemsListWithIDs(t *testing.T) {
 	)
 
 	options := ListOptions{
-		IDs: []int64{1, 2},
+		Ids: []uint64{1, 2},
 	}
 
-	items, err := client.InventoryItem.List(options)
+	items, err := client.InventoryItem.List(context.Background(), options)
 	if err != nil {
 		t.Errorf("InventoryItems.List returned error: %v", err)
 	}
@@ -90,13 +127,14 @@ func TestInventoryItemGet(t *testing.T) {
 	httpmock.RegisterResponder("GET", fmt.Sprintf("https://fooshop.myshopify.com/%s/inventory_items/1.json", client.pathPrefix),
 		httpmock.NewBytesResponder(200, loadFixture("inventory_item.json")))
 
-	item, err := client.InventoryItem.Get(1, nil)
+	item, err := client.InventoryItem.Get(context.Background(), 1, nil)
 	if err != nil {
 		t.Errorf("InventoryItem.Get returned error: %v", err)
 	}
 
 	inventoryItemTests(t, item)
 }
+
 func TestInventoryItemUpdate(t *testing.T) {
 	setup()
 	defer teardown()
@@ -105,10 +143,10 @@ func TestInventoryItemUpdate(t *testing.T) {
 		httpmock.NewBytesResponder(200, loadFixture("inventory_item.json")))
 
 	item := InventoryItem{
-		ID: 1,
+		Id: 1,
 	}
 
-	updatedItem, err := client.InventoryItem.Update(item)
+	updatedItem, err := client.InventoryItem.Update(context.Background(), item)
 	if err != nil {
 		t.Errorf("InentoryItem.Update returned error: %v", err)
 	}

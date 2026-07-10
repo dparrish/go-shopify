@@ -1,6 +1,7 @@
 package goshopify
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -17,17 +18,32 @@ func TestAppAuthorizeUrl(t *testing.T) {
 	defer teardown()
 
 	cases := []struct {
-		shopName string
-		nonce    string
-		expected string
+		shopName    string
+		nonce       string
+		expected    string
+		errExpected string
 	}{
-		{"fooshop", "thenonce", "https://fooshop.myshopify.com/admin/oauth/authorize?client_id=apikey&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback&scope=read_products&state=thenonce"},
+		{
+			"fooshop",
+			"thenonce",
+			"https://fooshop.myshopify.com/admin/oauth/authorize?client_id=apikey&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback&scope=read_products&state=thenonce",
+			"",
+		},
+		{
+			"foo^^shop",
+			"thenonce",
+			"",
+			`parse "https://foo^^shop.myshopify.com": invalid character "^" in host name`,
+		},
 	}
 
 	for _, c := range cases {
-		actual := app.AuthorizeUrl(c.shopName, c.nonce)
+		actual, err := app.AuthorizeUrl(c.shopName, c.nonce)
+		if (c.errExpected == "" && err != nil) || (c.errExpected != "" && err.Error() != c.errExpected) {
+			t.Fatalf("App.AuthorizeUrl(): err expected %s, err actual %s", c.errExpected, err)
+		}
 		if actual != c.expected {
-			t.Errorf("App.AuthorizeUrl(): expected %s, actual %s", c.expected, actual)
+			t.Fatalf("App.AuthorizeUrl(): expected %s, actual %s", c.expected, actual)
 		}
 	}
 }
@@ -40,8 +56,7 @@ func TestAppGetAccessToken(t *testing.T) {
 		httpmock.NewStringResponder(200, `{"access_token":"footoken"}`))
 
 	app.Client = client
-	token, err := app.GetAccessToken("fooshop", "foocode")
-
+	token, err := app.GetAccessToken(context.Background(), "fooshop", "foocode")
 	if err != nil {
 		t.Fatalf("App.GetAccessToken(): %v", err)
 	}
@@ -52,14 +67,88 @@ func TestAppGetAccessToken(t *testing.T) {
 	}
 }
 
+func TestAppGetAccessTokenWithClientCredentialsGrant(t *testing.T) {
+	setup()
+	defer teardown()
+
+	httpmock.RegisterResponder("POST", "https://fooshop.myshopify.com/admin/oauth/access_token",
+		httpmock.NewStringResponder(200, `{"access_token":"footoken","scope":"read_products","expires_in":86399}`))
+
+	app.Client = client
+	token, err := app.GetAccessTokenWithClientCredentialsGrant(context.Background(), "fooshop")
+	if err != nil {
+		t.Fatalf("App.GetAccessTokenWithClientCredentialsGrant(): %v", err)
+	}
+
+	if token.AccessToken != "footoken" {
+		t.Errorf("Token = %v, expected footoken", token.AccessToken)
+	}
+	if token.Scope != "read_products" {
+		t.Errorf("Scope = %v, expected read_products", token.Scope)
+	}
+	if token.ExpiresIn != 86399 {
+		t.Errorf("ExpiresIn = %v, expected 86399", token.ExpiresIn)
+	}
+}
+
+func TestAppGetAccessTokenWithClientCredentialsGrantError(t *testing.T) {
+	setup()
+	defer teardown()
+
+	// Case 1: client.Do returns error (e.g. 404)
+	httpmock.RegisterResponder("POST", "https://fooshop.myshopify.com/admin/oauth/access_token",
+		httpmock.NewStringResponder(404, `{"errors": "application_cannot_be_found"}`))
+
+	app.Client = client
+	expectedError := errors.New("application_cannot_be_found")
+
+	token, err := app.GetAccessTokenWithClientCredentialsGrant(context.Background(), "fooshop")
+	if err == nil || err.Error() != expectedError.Error() {
+		t.Errorf("Expected error %s got error %s", expectedError.Error(), err.Error())
+	}
+	if token != nil && token.AccessToken != "" {
+		t.Errorf("Expected nil token received %v", token.AccessToken)
+	}
+
+	expectedError = errors.New("parse ://example.com: missing protocol scheme")
+	oldPath := accessTokenRelPath
+	accessTokenRelPath = "://example.com"
+	defer func() { accessTokenRelPath = oldPath }()
+
+	token, err = app.GetAccessTokenWithClientCredentialsGrant(context.Background(), "fooshop")
+	if err == nil || !strings.Contains(err.Error(), "missing protocol scheme") {
+		t.Errorf("Expected error %s got error %s", expectedError.Error(), err.Error())
+	}
+	if token != nil {
+		t.Errorf("Expected nil token received %v", token)
+	}
+}
+
+func TestAppGetAccessTokenWithClientCredentialsGrantNilClient(t *testing.T) {
+	setup()
+	defer teardown()
+
+	oldPath := accessTokenRelPath
+	accessTokenRelPath = "://example.com"
+	defer func() { accessTokenRelPath = oldPath }()
+
+	token, err := app.GetAccessTokenWithClientCredentialsGrant(context.Background(), "fooshop")
+	if err == nil || !strings.Contains(err.Error(), "missing protocol scheme") {
+		t.Errorf("Expected missing protocol scheme error, got: %v", err)
+	}
+	if token != nil {
+		t.Errorf("Expected nil token received %v", token)
+	}
+}
+
 func TestAppGetAccessTokenError(t *testing.T) {
 	setup()
 	defer teardown()
 
-	// app.Client isn't specified so NewClient called
-	expectedError := errors.New("invalid_request")
+	// app.Client isn't specified so MustNewClient called
+	expectedError := errors.New("application_cannot_be_found")
 
-	token, err := app.GetAccessToken("fooshop", "")
+	token, err := app.GetAccessToken(context.Background(), "fooshop", "")
 
 	if err == nil || err.Error() != expectedError.Error() {
 		t.Errorf("Expected error %s got error %s", expectedError.Error(), err.Error())
@@ -70,7 +159,7 @@ func TestAppGetAccessTokenError(t *testing.T) {
 
 	expectedError = errors.New("parse ://example.com: missing protocol scheme")
 	accessTokenRelPath = "://example.com" // cause NewRequest to trip a parse error
-	token, err = app.GetAccessToken("fooshop", "")
+	token, err = app.GetAccessToken(context.Background(), "fooshop", "")
 	if err == nil || !strings.Contains(err.Error(), "missing protocol scheme") {
 		t.Errorf("Expected error %s got error %s", expectedError.Error(), err.Error())
 	}
@@ -81,7 +170,7 @@ func TestAppGetAccessTokenError(t *testing.T) {
 
 func TestAppVerifyAuthorizationURL(t *testing.T) {
 	// These credentials are from the Shopify example page:
-	// https://help.shopify.com/api/guides/authentication/oauth#verification
+	// https://shopify.dev/docs/api/admin-rest/latest/resources/oauth#verification
 	urlOk, _ := url.Parse("http://example.com/callback?code=0907a61c0c8d55e99db179b68161bc00&hmac=4712bf92ffc2917d15a2f5a273e39f0116667419aa4b6ac0b3baaf26fa3c4d20&shop=some-shop.myshopify.com&signature=11813d1e7bbf4629edcda0628a3f7a20&timestamp=1337178173")
 	urlOkWithState, _ := url.Parse("http://example.com/callback?code=0907a61c0c8d55e99db179b68161bc00&hmac=7db6973c2aff68295ebcf354c2ce528a6b09aef1146baafccc2e0b369fff5f6d&shop=some-shop.myshopify.com&signature=11813d1e7bbf4629edcda0628a3f7a20&timestamp=1337178173&state=abcd")
 	urlNotOk, _ := url.Parse("http://example.com/callback?code=0907a61c0c8d55e99db179b68161bc00&hmac=4712bf92ffc2917d15a2f5a273e39f0116667419aa4b6ac0b3baaf26fa3c4d20&shop=some-shop.myshopify.com&signature=11813d1e7bbf4629edcda0628a3f7a20&timestamp=133717817")
@@ -106,6 +195,32 @@ func TestAppVerifyAuthorizationURL(t *testing.T) {
 	}
 }
 
+func TestSignature(t *testing.T) {
+	setup()
+	defer teardown()
+
+	// https://shopify.dev/tutorials/display-data-on-an-online-store-with-an-application-proxy-app-extension
+	queryString := "extra=1&extra=2&shop=shop-name.myshopify.com&path_prefix=%2Fapps%2Fawesome_reviews&timestamp=1317327555&signature=a9718877bea71c2484f91608a7eaea1532bdf71f5c56825065fa4ccabe549ef3"
+
+	urlOk, _ := url.Parse(fmt.Sprintf("http://example.com/proxied?%s", queryString))
+	urlNotOk, _ := url.Parse(fmt.Sprintf("http://example.com/proxied?%s&notok=true", queryString))
+
+	cases := []struct {
+		u        *url.URL
+		expected bool
+	}{
+		{urlOk, true},
+		{urlNotOk, false},
+	}
+
+	for _, c := range cases {
+		ok := app.VerifySignature(c.u)
+		if ok != c.expected {
+			t.Errorf("VerifySignature expected: |%v| but got: |%v|", c.expected, ok)
+		}
+	}
+}
+
 func TestVerifyWebhookRequest(t *testing.T) {
 	setup()
 	defer teardown()
@@ -125,8 +240,8 @@ func TestVerifyWebhookRequest(t *testing.T) {
 
 	for _, c := range cases {
 
-		testClient := NewClient(App{}, "", "")
-		req, err := testClient.NewRequest("GET", "", c.message, nil)
+		testClient := MustNewClient(App{}, "", "")
+		req, err := testClient.NewRequest(context.Background(), "GET", "", c.message, nil)
 		if err != nil {
 			t.Fatalf("Webhook.verify err = %v, expected true", err)
 		}
@@ -140,7 +255,6 @@ func TestVerifyWebhookRequest(t *testing.T) {
 			t.Errorf("Webhook.verify was expecting %t got %t", c.expected, isValid)
 		}
 	}
-
 }
 
 func TestVerifyWebhookRequestVerbose(t *testing.T) {
@@ -178,13 +292,13 @@ func TestVerifyWebhookRequestVerbose(t *testing.T) {
 
 	for _, c := range cases {
 
-		testClient := NewClient(App{}, "", "")
+		testClient := MustNewClient(App{}, "", "")
 
 		// We actually want to test nil body's, not ""
 		if c.message == "" {
-			req, err = testClient.NewRequest("GET", "", nil, nil)
+			req, err = testClient.NewRequest(context.Background(), "GET", "", nil, nil)
 		} else {
-			req, err = testClient.NewRequest("GET", "", c.message, nil)
+			req, err = testClient.NewRequest(context.Background(), "GET", "", c.message, nil)
 		}
 
 		if err != nil {
@@ -233,5 +347,4 @@ func TestVerifyWebhookRequestVerbose(t *testing.T) {
 	if err == nil || isValid == true || err.Error() != errors.New("test-error").Error() {
 		t.Errorf("Expected error %s got %s", errors.New("test-error"), err)
 	}
-
 }

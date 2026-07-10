@@ -1,22 +1,29 @@
 package goshopify
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
 
-const locationsBasePath = "locations"
+const (
+	locationsBasePath     = "locations"
+	locationsResourceName = "locations"
+)
 
 // LocationService is an interface for interfacing with the location endpoints
 // of the Shopify API.
-// See: https://help.shopify.com/en/api/reference/inventory/location
+// See: https://shopify.dev/docs/api/admin-rest/latest/resources/location
 type LocationService interface {
 	// Retrieves a list of locations
-	List(options interface{}) ([]Location, error)
-	// Retrieves a single location by its ID
-	Get(ID int64, options interface{}) (*Location, error)
+	List(ctx context.Context, options interface{}) ([]Location, error)
+	// Retrieves a single location by its Id
+	Get(ctx context.Context, id uint64, options interface{}) (*Location, error)
 	// Retrieves a count of locations
-	Count(options interface{}) (int, error)
+	Count(ctx context.Context, options interface{}) (int, error)
+
+	// MetafieldsService used for Location resource to communicate with Metafields resource
+	MetafieldsService
 }
 
 type Location struct {
@@ -45,8 +52,8 @@ type Location struct {
 	// The date and time (ISO 8601 format) when the location was created.
 	CreatedAt time.Time `json:"created_at"`
 
-	// The ID for the location.
-	ID int64 `json:"id"`
+	// The Id for the location.
+	Id uint64 `json:"id"`
 
 	// Whether this is a fulfillment service location.
 	// If true, then the location is a fulfillment service location.
@@ -71,7 +78,7 @@ type Location struct {
 	// The zip or postal code.
 	Zip string `json:"zip"`
 
-	AdminGraphqlAPIID string `json:"admin_graphql_api_id"`
+	AdminGraphqlApiId string `json:"admin_graphql_api_id"`
 }
 
 // LocationServiceOp handles communication with the location related methods of
@@ -80,23 +87,59 @@ type LocationServiceOp struct {
 	client *Client
 }
 
-func (s *LocationServiceOp) List(options interface{}) ([]Location, error) {
+func (s *LocationServiceOp) List(ctx context.Context, options interface{}) ([]Location, error) {
 	path := fmt.Sprintf("%s.json", locationsBasePath)
 	resource := new(LocationsResource)
-	err := s.client.Get(path, resource, options)
+	err := s.client.Get(ctx, path, resource, options)
 	return resource.Locations, err
 }
 
-func (s *LocationServiceOp) Get(ID int64, options interface{}) (*Location, error) {
-	path := fmt.Sprintf("%s/%d.json", locationsBasePath, ID)
+func (s *LocationServiceOp) Get(ctx context.Context, id uint64, options interface{}) (*Location, error) {
+	path := fmt.Sprintf("%s/%d.json", locationsBasePath, id)
 	resource := new(LocationResource)
-	err := s.client.Get(path, resource, options)
+	err := s.client.Get(ctx, path, resource, options)
 	return resource.Location, err
 }
 
-func (s *LocationServiceOp) Count(options interface{}) (int, error) {
+func (s *LocationServiceOp) Count(ctx context.Context, options interface{}) (int, error) {
 	path := fmt.Sprintf("%s/count.json", locationsBasePath)
-	return s.client.Count(path, options)
+	return s.client.Count(ctx, path, options)
+}
+
+// ListMetafields for a Location resource.
+func (s *LocationServiceOp) ListMetafields(ctx context.Context, locationId uint64, options interface{}) ([]Metafield, error) {
+	metafieldService := &MetafieldServiceOp{client: s.client, resource: locationsResourceName, resourceId: locationId}
+	return metafieldService.List(ctx, options)
+}
+
+// Count metafields for a Location resource.
+func (s *LocationServiceOp) CountMetafields(ctx context.Context, locationId uint64, options interface{}) (int, error) {
+	metafieldService := &MetafieldServiceOp{client: s.client, resource: locationsResourceName, resourceId: locationId}
+	return metafieldService.Count(ctx, options)
+}
+
+// GetMetafield for a Location resource.
+func (s *LocationServiceOp) GetMetafield(ctx context.Context, locationId uint64, metafieldId uint64, options interface{}) (*Metafield, error) {
+	metafieldService := &MetafieldServiceOp{client: s.client, resource: locationsResourceName, resourceId: locationId}
+	return metafieldService.Get(ctx, metafieldId, options)
+}
+
+// CreateMetafield for a Location resource.
+func (s *LocationServiceOp) CreateMetafield(ctx context.Context, locationId uint64, metafield Metafield) (*Metafield, error) {
+	metafieldService := &MetafieldServiceOp{client: s.client, resource: locationsResourceName, resourceId: locationId}
+	return metafieldService.Create(ctx, metafield)
+}
+
+// UpdateMetafield for a Location resource.
+func (s *LocationServiceOp) UpdateMetafield(ctx context.Context, locationId uint64, metafield Metafield) (*Metafield, error) {
+	metafieldService := &MetafieldServiceOp{client: s.client, resource: locationsResourceName, resourceId: locationId}
+	return metafieldService.Update(ctx, metafield)
+}
+
+// DeleteMetafield for a Location resource.
+func (s *LocationServiceOp) DeleteMetafield(ctx context.Context, locationId uint64, metafieldId uint64) error {
+	metafieldService := &MetafieldServiceOp{client: s.client, resource: locationsResourceName, resourceId: locationId}
+	return metafieldService.Delete(ctx, metafieldId)
 }
 
 // Represents the result from the locations/X.json endpoint

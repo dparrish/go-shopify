@@ -1,8 +1,8 @@
 package goshopify
 
 import (
+	"context"
 	"fmt"
-	"net/http"
 	"time"
 )
 
@@ -10,11 +10,11 @@ const collectionsBasePath = "collections"
 
 // CollectionService is an interface for interfacing with the collection endpoints
 // of the Shopify API.
-// See: https://help.shopify.com/api/reference/products/collection
+// See: https://shopify.dev/docs/api/admin-rest/latest/resources/collection
 type CollectionService interface {
-	Get(collectionID int64, options interface{}) (*Collection, error)
-	ListProducts(collectionID int64, options interface{}) ([]Product, error)
-	ListProductsWithPagination(collectionID int64,options interface{}) ([]Product, *Pagination, error)
+	Get(ctx context.Context, collectionId uint64, options interface{}) (*Collection, error)
+	ListProducts(ctx context.Context, collectionId uint64, options interface{}) ([]Product, error)
+	ListProductsWithPagination(ctx context.Context, collectionId uint64, options interface{}) ([]Product, *Pagination, error)
 }
 
 // CollectionServiceOp handles communication with the collection related methods of
@@ -25,16 +25,16 @@ type CollectionServiceOp struct {
 
 // Collection represents a Shopify collection
 type Collection struct {
-	ID             int64       `json:"id"`
-	Handle         string      `json:"handle"`
-	Title          string      `json:"title"`
-	UpdatedAt      *time.Time  `json:"updated_at"`
-	BodyHTML       string      `json:"body_html"`
-	SortOrder      string      `json:"sort_order"`
-	TemplateSuffix string      `json:"template_suffix"`
-	Image          Image       `json:"image"`
-	PublishedAt    *time.Time  `json:"published_at"`
-	PublishedScope string      `json:"published_scope"`
+	Id             uint64     `json:"id"`
+	Handle         string     `json:"handle"`
+	Title          string     `json:"title"`
+	UpdatedAt      *time.Time `json:"updated_at"`
+	BodyHTML       string     `json:"body_html"`
+	SortOrder      string     `json:"sort_order"`
+	TemplateSuffix string     `json:"template_suffix"`
+	Image          Image      `json:"image"`
+	PublishedAt    *time.Time `json:"published_at"`
+	PublishedScope string     `json:"published_scope"`
 }
 
 // Represents the result from the collections/X.json endpoint
@@ -43,16 +43,16 @@ type CollectionResource struct {
 }
 
 // Get individual collection
-func (s *CollectionServiceOp) Get(collectionID int64, options interface{}) (*Collection, error) {
-	path := fmt.Sprintf("%s/%d.json", collectionsBasePath, collectionID)
+func (s *CollectionServiceOp) Get(ctx context.Context, collectionId uint64, options interface{}) (*Collection, error) {
+	path := fmt.Sprintf("%s/%d.json", collectionsBasePath, collectionId)
 	resource := new(CollectionResource)
-	err := s.client.Get(path, resource, options)
+	err := s.client.Get(ctx, path, resource, options)
 	return resource.Collection, err
 }
 
 // List products for a collection
-func (s *CollectionServiceOp) ListProducts(collectionID int64, options interface{}) ([]Product, error) {
-	products, _, err := s.ListProductsWithPagination(collectionID, options)
+func (s *CollectionServiceOp) ListProducts(ctx context.Context, collectionId uint64, options interface{}) ([]Product, error) {
+	products, _, err := s.ListProductsWithPagination(ctx, collectionId, options)
 	if err != nil {
 		return nil, err
 	}
@@ -60,20 +60,11 @@ func (s *CollectionServiceOp) ListProducts(collectionID int64, options interface
 }
 
 // List products for a collection and return pagination to retrieve next/previous results.
-func (s *CollectionServiceOp) ListProductsWithPagination(collectionID int64,options interface{}) ([]Product, *Pagination, error) {
-	path := fmt.Sprintf("%s/%d/products.json", collectionsBasePath, collectionID)
+func (s *CollectionServiceOp) ListProductsWithPagination(ctx context.Context, collectionId uint64, options interface{}) ([]Product, *Pagination, error) {
+	path := fmt.Sprintf("%s/%d/products.json", collectionsBasePath, collectionId)
 	resource := new(ProductsResource)
-	headers := http.Header{}
 
-	headers, err := s.client.createAndDoGetHeaders("GET", path, nil, options, resource)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Extract pagination info from header
-	linkHeader := headers.Get("Link")
-
-	pagination, err := extractPagination(linkHeader)
+	pagination, err := s.client.ListWithPagination(ctx, path, resource, options)
 	if err != nil {
 		return nil, nil, err
 	}

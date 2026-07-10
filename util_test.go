@@ -1,7 +1,9 @@
 package goshopify
 
 import (
+	"net/url"
 	"testing"
+	"time"
 )
 
 func TestShopFullName(t *testing.T) {
@@ -68,7 +70,7 @@ func TestShopBaseUrl(t *testing.T) {
 func TestMetafieldPathPrefix(t *testing.T) {
 	cases := []struct {
 		resource   string
-		resourceID int64
+		resourceId uint64
 		expected   string
 	}{
 		{"", 0, "metafields"},
@@ -76,9 +78,9 @@ func TestMetafieldPathPrefix(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		actual := MetafieldPathPrefix(c.resource, c.resourceID)
+		actual := MetafieldPathPrefix(c.resource, c.resourceId)
 		if actual != c.expected {
-			t.Errorf("MetafieldPathPrefix(%s, %d): expected %s, actual %s", c.resource, c.resourceID, c.expected, actual)
+			t.Errorf("MetafieldPathPrefix(%s, %d): expected %s, actual %s", c.resource, c.resourceId, c.expected, actual)
 		}
 	}
 }
@@ -86,7 +88,7 @@ func TestMetafieldPathPrefix(t *testing.T) {
 func TestFulfillmentPathPrefix(t *testing.T) {
 	cases := []struct {
 		resource   string
-		resourceID int64
+		resourceId uint64
 		expected   string
 	}{
 		{"", 0, "fulfillments"},
@@ -94,9 +96,63 @@ func TestFulfillmentPathPrefix(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		actual := FulfillmentPathPrefix(c.resource, c.resourceID)
+		actual := FulfillmentPathPrefix(c.resource, c.resourceId)
 		if actual != c.expected {
-			t.Errorf("FulfillmentPathPrefix(%s, %d): expected %s, actual %s", c.resource, c.resourceID, c.expected, actual)
+			t.Errorf("FulfillmentPathPrefix(%s, %d): expected %s, actual %s", c.resource, c.resourceId, c.expected, actual)
+		}
+	}
+}
+
+func TestOnlyDateMarshal(t *testing.T) {
+	cases := []struct {
+		in       OnlyDate
+		expected string
+	}{
+		{OnlyDate{time.Date(2023, 03, 31, 0, 0, 0, 0, time.Local)}, "\"2023-03-31\""},
+		{OnlyDate{}, "\"0001-01-01\""},
+	}
+
+	for _, c := range cases {
+		actual, _ := c.in.MarshalJSON()
+		if string(actual) != c.expected {
+			t.Errorf("MarshalJSON(%s): expected %s, actual %s", c.in.String(), c.expected, string(actual))
+		}
+	}
+}
+
+func TestOnlyDateUnmarshal(t *testing.T) {
+	cases := []struct {
+		in       string
+		expected OnlyDate
+	}{
+		{"\"2023-03-31\"", OnlyDate{time.Date(2023, 03, 31, 0, 0, 0, 0, time.Local)}},
+		{"\"0001-01-01\"", OnlyDate{}},
+		{"\"\"", OnlyDate{}},
+	}
+
+	for _, c := range cases {
+		newDate := OnlyDate{}
+		_ = newDate.UnmarshalJSON([]byte(c.in))
+		if newDate.String() != c.expected.String() {
+			t.Errorf("UnmarshalJSON(%s): expected %s, actual %s", c.in, newDate.String(), c.expected.String())
+		}
+	}
+}
+
+func TestOnlyDateEncode(t *testing.T) {
+	cases := []struct {
+		in       OnlyDate
+		expected string
+	}{
+		{OnlyDate{time.Date(2023, 03, 31, 0, 0, 0, 0, time.Local)}, "\"2023-03-31\""},
+		{OnlyDate{}, "\"0001-01-01\""},
+	}
+
+	for _, c := range cases {
+		urlVal := url.Values{}
+		_ = c.in.EncodeValues("date", &urlVal)
+		if urlVal.Get("date") != c.expected {
+			t.Errorf("EncodeValues(%s): expected %s, actual %s", c.in.String(), c.expected, urlVal.Get("date"))
 		}
 	}
 }
